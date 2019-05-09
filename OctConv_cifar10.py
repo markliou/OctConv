@@ -10,9 +10,47 @@ batch_size = 32
 # Network Parameters
 num_classes = 10 # Cifar10 total classes (0-9 digits)
 dropout = 0.25 # Dropout, probability to drop a unit
+alpha = 0.8
+
+
+# OctConv 
+#######
+# The OctConv should be compose with 3 parts:
+# 1) The input part: the channels have only single frequency, but output multi-frequency channels
+# 2) The building block part: this part swallow multi-frequency channels, and output multi-frequency channels
+# 3) The final part : this part swallow multi-frequency channels, and single frequency channels
+# Tips:
+# using pooling would be better than 2-stride convolution due to the original paper
+def OctConv_ini(x, alpha, channel_no, kernel_size = 3, activation = tf.nn.relu):
+    H_channel_no = int(channel_no * alpha // 1)
+    L_channel_no = int(channel_no - H_channel_no)
+    H2H = tf.keras.layers.Conv2D(H_channel_no, kernel_size, padding="SAME", activation=activation)(x)
+    H2L = tf.keras.layers.AveragePooling2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(x)
+    H2L = tf.keras.layers.Conv2D(L_channel_no, kernel_size, padding="SAME", activation=activation)(H2L)
+    return H2H, H2L
+pass 
+
+def OctConv_block(Hx, Lx, alpha, channel_no,  kernel_size = 3, activation = tf.nn.relu):
+    H_channel_no = int(channel_no * alpha // 1)
+    L_channel_no = int(channel_no - H_channel_no)
+    H2H = tf.keras.layers.Conv2D(H_channel_no, kernel_size, padding="SAME", activation=None)(Hx)
+    H2L = tf.keras.layers.AveragePooling2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(Hx)
+    H2L = tf.keras.layers.Conv2D(L_channel_no, kernel_size, padding="SAME", activation=None)(H2L)
+    L2L = tf.keras.layers.Conv2D(L_channel_no, kernel_size, padding="SAME", activation=None)(Lx)
+    L2H = tf.keras.layers.Conv2D(H_channel_no, kernel_size, padding="SAME", activation=None)(Lx)
+    L2H = tf.keras.layers.UpSampling2D(interpolation='bilinear')(L2H)
+    return activation((H2H + L2H)/2), activation((L2L + H2L)/2)
+pass
+
+def OctConv_final(Hx, Lx, channel_no, kernel_size = 3, activation = tf.nn.relu):
+    H2H = tf.keras.layers.Conv2D(channel_no, kernel_size, padding="SAME", activation=None)(Hx)
+    L2H = tf.keras.layers.Conv2D(channel_no, kernel_size, padding="SAME", activation=None)(Lx)
+    L2H = tf.keras.layers.UpSampling2D(interpolation='bilinear')(L2H)
+    return activation((H2H + L2H)/2)
+pass
 
 # Create the neural network
-def conv_net(x, n_classes, dropout, reuse, is_training):
+def conv_net(x, alpha, n_classes, dropout, reuse, is_training):
     # Define a scope for reusing the variables
     with tf.variable_scope('ConvNet', reuse=reuse):
 
@@ -22,20 +60,25 @@ def conv_net(x, n_classes, dropout, reuse, is_training):
         x = tf.reshape(x, shape=[-1, 32, 32, 3])
 
         # Convolution Layer with 32 filters and a kernel size of 5
-        conv1 = tf.layers.conv2d(x, 32, 5, padding="SAME", activation=tf.nn.relu)
+        conv1H, conv1L =OctConv_ini(x, alpha, 32, kernel_size = 5, activation = tf.nn.relu)
         # Max Pooling (down-sampling) with strides of 2 and kernel size of 2
-        conv1 = tf.layers.max_pooling2d(conv1, 2, 2)
+        conv1H = tf.keras.layers.MaxPool2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(conv1H)
+        conv1L = tf.keras.layers.MaxPool2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(conv1L)
 
-        conv2 = tf.layers.conv2d(conv1, 32, 5, padding="SAME", activation=tf.nn.relu)
-        conv3 = tf.layers.conv2d(conv2, 32, 5, padding="SAME", activation=tf.nn.relu)
+        conv2H, conv2L = OctConv_block(conv1H, conv1L, alpha, 32, kernel_size = 5, activation = tf.nn.relu)
+        conv3H, conv3L = OctConv_block(conv2H, conv2L, alpha, 32, kernel_size = 5, activation = tf.nn.relu)
+        
 
         # Convolution Layer with 64 filters and a kernel size of 3
-        conv4 = tf.layers.conv2d(conv3, 64, 3, padding="SAME", activation=tf.nn.relu)
+        conv4H, conv4L = OctConv_block(conv3H, conv3L, alpha, 64, kernel_size = 3, activation = tf.nn.relu)
+        
         # Max Pooling (down-sampling) with strides of 2 and kernel size of 2
-        conv4 = tf.layers.max_pooling2d(conv4, 2, 2)
+        conv4H = tf.keras.layers.MaxPool2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(conv4H)
+        conv4L = tf.keras.layers.MaxPool2D(pool_size=(2, 2), strides=(2,2), padding='SAME')(conv4L)
 
-        conv5 = tf.layers.conv2d(conv4, 64, 3, padding="SAME", activation=tf.nn.relu)
-        conv6 = tf.layers.conv2d(conv5, 64, 3, padding="SAME", activation=tf.nn.relu)
+        conv5H, conv5L = OctConv_block(conv4H, conv4L, alpha, 64, kernel_size = 3, activation = tf.nn.relu)
+        conv6 = OctConv_final(conv5H, conv5L, 64,  kernel_size = 3, activation = tf.nn.relu)
+        
 
         # Flatten the data to a 1-D vector for the fully connected layer
         fc1 = tf.contrib.layers.flatten(conv6)
@@ -62,8 +105,9 @@ CIFAR10_dataset = CIFAR10_dataset.prefetch(buffer_size=100) # prefech
 CIFAR10_dataset_iter = CIFAR10_dataset.make_initializable_iterator()
 CIFAR10_dataset_fetch = CIFAR10_dataset_iter.get_next()
 
-logits_train = conv_net(CIFAR10_dataset_fetch['imgs'], num_classes, dropout, reuse=False, is_training=True)
-logits_test = conv_net(CIFAR10_imgs, num_classes, dropout=0, reuse=True, is_training=False)
+# conv_net(x, alpha, n_classes, dropout, reuse, is_training)
+logits_train = conv_net(CIFAR10_dataset_fetch['imgs'], alpha, num_classes, dropout, reuse=False, is_training=True)
+logits_test = conv_net(CIFAR10_imgs, alpha, num_classes, dropout=0, reuse=True, is_training=False)
 
 # Predictions
 pred_classes = tf.cast(tf.argmax(logits_test, axis=1), tf.float32)
