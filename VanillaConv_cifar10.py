@@ -8,8 +8,7 @@ num_steps = 2000
 batch_size = 32
 
 # Network Parameters
-num_input = 784 # MNIST data input (img shape: 28*28)
-num_classes = 10 # MNIST total classes (0-9 digits)
+num_classes = 10 # Cifar10 total classes (0-9 digits)
 dropout = 0.25 # Dropout, probability to drop a unit
 
 # Create the neural network
@@ -23,17 +22,23 @@ def conv_net(x, n_classes, dropout, reuse, is_training):
         x = tf.reshape(x, shape=[-1, 32, 32, 3])
 
         # Convolution Layer with 32 filters and a kernel size of 5
-        conv1 = tf.layers.conv2d(x, 32, 5, activation=tf.nn.relu)
+        conv1 = tf.layers.conv2d(x, 32, 5, padding="SAME", activation=tf.nn.relu)
         # Max Pooling (down-sampling) with strides of 2 and kernel size of 2
         conv1 = tf.layers.max_pooling2d(conv1, 2, 2)
 
+        conv2 = tf.layers.conv2d(conv1, 32, 5, padding="SAME", activation=tf.nn.relu)
+        conv3 = tf.layers.conv2d(conv2, 32, 5, padding="SAME", activation=tf.nn.relu)
+
         # Convolution Layer with 64 filters and a kernel size of 3
-        conv2 = tf.layers.conv2d(conv1, 64, 3, activation=tf.nn.relu)
+        conv4 = tf.layers.conv2d(conv3, 64, 3, padding="SAME", activation=tf.nn.relu)
         # Max Pooling (down-sampling) with strides of 2 and kernel size of 2
-        conv2 = tf.layers.max_pooling2d(conv2, 2, 2)
+        conv4 = tf.layers.max_pooling2d(conv4, 2, 2)
+
+        conv5 = tf.layers.conv2d(conv4, 64, 3, padding="SAME", activation=tf.nn.relu)
+        conv6 = tf.layers.conv2d(conv5, 64, 3, padding="SAME", activation=tf.nn.relu)
 
         # Flatten the data to a 1-D vector for the fully connected layer
-        fc1 = tf.contrib.layers.flatten(conv2)
+        fc1 = tf.contrib.layers.flatten(conv6)
 
         # Fully connected layer (in tf contrib folder for now)
         fc1 = tf.layers.dense(fc1, 1024)
@@ -71,11 +76,14 @@ loss_op = tf.reduce_mean(
                 labels=tf.reshape(tf.cast(CIFAR10_dataset_fetch['labs'], dtype=tf.int32), [-1])
             )
           )
+cnn_vars =  tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='ConvNet')
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-train_op = optimizer.minimize(loss_op, global_step=tf.train.get_global_step())
+train_op = optimizer.minimize(loss_op, var_list=cnn_vars, global_step=tf.train.get_global_step())
 
 # Evaluate the accuracy of the model
 acc_op = tf.reduce_mean(tf.cast(tf.equal(tf.reshape(CIFAR10_labels,tf.shape(pred_classes)), pred_classes), tf.float32))
+
+
 
 # setting the device parameters
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -83,6 +91,12 @@ config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
 sess = tf.Session(config=config)
 sess.run(tf.global_variables_initializer())
+
+# tensorboard
+tf.summary.scalar('loss', loss_op)
+merged = tf.summary.merge_all()
+TFB_summary = tf.summary.FileWriter('VCNN', graph=sess.graph)
+
 sess.graph.finalize() 
 
 from tensorflow.examples.tutorials.mnist import input_data
@@ -92,6 +106,11 @@ sess.run(CIFAR10_dataset_iter.initializer, feed_dict={CIFAR10_imgs: CIFAR10_tr_i
 # training
 for training_step in range(num_steps):
     closs, _ = sess.run([loss_op, train_op])
+
+    # call the tensorboad operator
+    TFB_process = sess.run(merged)
+    TFB_summary.add_summary(TFB_process, training_step)
+
     if training_step%1000 == 0:
         print('step:{} loss:{}'.format(training_step, closs))
 
@@ -99,7 +118,6 @@ for training_step in range(num_steps):
 acc = sess.run(acc_op, feed_dict={CIFAR10_imgs: CIFAR10_ts_imgs,
                                   CIFAR10_labels: np.reshape(CIFAR10_ts_labs, -1)})
 
-TFB_summary = tf.summary.FileWriter('VCNN', graph=sess.graph)
 
 sess.close()
 print("Testing Accuracy:",acc)
